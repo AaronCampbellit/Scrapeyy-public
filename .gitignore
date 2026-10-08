@@ -1,0 +1,13 @@
+.worktrees/
+work/
+.wxt/
+node_modules/
+.output/
+coverage/
+dist/
+*.zip
+.DS_Store
+
+# Local browser automation records
+.playwright-cli/
+.playwright/
