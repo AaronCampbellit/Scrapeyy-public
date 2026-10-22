@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
@@ -9,6 +9,9 @@ import type {
 import { PopupApp } from "../../src/features/popup/PopupApp";
 import { DEFAULT_APP_SETTINGS, type AppSettings } from "../../src/storage/app-settings";
 import { CAPTURE_VERSION, type ScreenshotResult } from "../../src/platform/screenshot-messages";
+import { requestEmbeddedViewerPermission, type EmbeddedFrameApi, type EmbeddedViewerPermission } from "../../src/platform/embedded-frame-capture";
+import { captionTextKey, videoTextKey } from "../../src/media/video-text";
+import type { VideoInventory } from "../../src/media/videos";
 
 const data: PopupWorkspaceData = {
   site: { origin: "https://example.test", access: "one-time" },
@@ -71,6 +74,88 @@ const data: PopupWorkspaceData = {
   },
 };
 
+it("exports a selected language as TXT, VTT or SRT independently of the video", async () => {
+  const inventory: VideoInventory = { pageUrl: "https://example.test", notes: [], videos: [{ title: "Webinar", duration: 3583, width: 1920, height: 1080,
+    sources: [{ url: "https://fast.wistia.net/embed/iframe/i0vm82gvvs", kind: "embed", type: "" }],
+    captions: [{ language: "eng", label: "English", text: "Full transcript", url: "https://fast.wistia.net/embed/captions/i0vm82gvvs.vtt?language=eng", cues: [] }],
+  }] };
+  const api = services({ inspectVideos: vi.fn().mockResolvedValue(inventory) });
+  const user = userEvent.setup();
+  render(<PopupApp services={api} />);
+  await user.click(await screen.findByRole("button", { name: "Scan videos" }));
+  for (const [name, format] of [["Download transcript (TXT)", "txt"], ["Captions (VTT)", "vtt"], ["Captions (SRT)", "srt"]] as const) {
+    await user.click(screen.getByRole("button", { name }));
+    expect(api.exportVideoText).toHaveBeenLastCalledWith({ videoKey: videoTextKey(inventory.videos[0]!), captionKey: captionTextKey(inventory.videos[0]!.captions[0]!), format });
+    await waitFor(() => expect(screen.getByRole("button", { name })).toBeEnabled());
+  }
+  expect(api.downloadVideo).not.toHaveBeenCalled();
+  await user.click(screen.getByRole("button", { name: "Copy transcript" }));
+  expect(api.copyVideoTranscript).toHaveBeenCalledWith({ videoKey: videoTextKey(inventory.videos[0]!), captionKey: captionTextKey(inventory.videos[0]!.captions[0]!), format: "txt" });
+  expect(await screen.findByText("Transcript copied — ready to paste.")).toBeVisible();
+  expect(screen.getByRole("button", { name: "Export video metadata (JSON)" })).toBeVisible();
+});
+
+it("does not offer timed caption downloads for text without timing data", async () => {
+  const api = services({ inspectVideos: vi.fn().mockResolvedValue({ pageUrl: "https://example.test", notes: [], videos: [{ title: "Text only", duration: null, width: 0, height: 0,
+    sources: [], captions: [{ language: "en", label: "English", text: "Transcript only", cues: [] }],
+  }] }) });
+  const user = userEvent.setup();
+  render(<PopupApp services={api} />);
+  await user.click(await screen.findByRole("button", { name: "Scan videos" }));
+  expect(screen.getByRole("button", { name: "Download transcript (TXT)" })).toBeEnabled();
+  expect(screen.getByRole("button", { name: "Captions (VTT)" })).toBeDisabled();
+  expect(screen.getByRole("button", { name: "Captions (SRT)" })).toBeDisabled();
+});
+
+it("shows Wistia download qualities and sends the selected asset to the download service", async () => {
+  const url = "https://embed-ssl.wistia.com/deliveries/webinar.bin";
+  const api = services({ inspectVideos: vi.fn().mockResolvedValue({ pageUrl: "https://example.test", notes: [], videos: [{
+    title: "IT Glue webinar", duration: 3582.73, width: 1920, height: 1080, captions: [],
+    sources: [{ url, kind: "file", type: "video/mp4", note: "Wistia MP4 · 1080p · 241.5 MB" }],
+  }] }) });
+  const user = userEvent.setup();
+  render(<PopupApp services={api} />);
+  await user.click(await screen.findByRole("button", { name: "Scan videos" }));
+  expect(await screen.findByText("IT Glue webinar")).toBeVisible();
+  expect(screen.getByText("Wistia MP4 · 1080p · 241.5 MB")).toBeVisible();
+  await user.click(screen.getByRole("button", { name: "Download video" }));
+  expect(api.downloadVideo).toHaveBeenCalledWith(url);
+});
+
+it("offers Clipboard as a destination and confirms a copied screenshot without claiming a download", async () => {
+  const api = services({ takeScreenshot: vi.fn().mockResolvedValue({
+    status: "copied", destination: "clipboard", version: CAPTURE_VERSION, filename: "page.png",
+  }) });
+  const user = userEvent.setup();
+  render(<PopupApp services={api} />);
+  await user.selectOptions(await screen.findByRole("combobox", { name: "Save screenshots to" }), "clipboard");
+  expect(api.saveSettings).toHaveBeenCalledWith({ ...data.settings, screenshotDestination: "clipboard" });
+  await user.click(screen.getByRole("button", { name: "Visible page" }));
+  expect(await screen.findByText("Screenshot copied — ready to paste.")).toBeVisible();
+  expect(screen.queryByText(/Screenshot saved:/)).toBeNull();
+});
+
+it("keeps Copy image immediately before Save PNG in the Inbox without changing the save destination", async () => {
+  const screenshotRun = {
+    ...data.runs[0]!,
+    screenshot: { kind: "visible" as const, filename: "page.png", title: "Example page", sourceUrl: "https://example.test" },
+  };
+  const api = services({ load: vi.fn().mockResolvedValue({ ...data, runs: [screenshotRun] }) });
+  const user = userEvent.setup();
+  render(<PopupApp services={api} />);
+  await user.click(await screen.findByRole("tab", { name: "Inbox" }));
+  const copy = await screen.findByRole("button", { name: /^Copy image$/ });
+  const save = screen.getByRole("button", { name: "Save screenshot PNG" });
+  expect(copy.compareDocumentPosition(save) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  await user.click(screen.getByRole("button", { name: /^Text$/ }));
+  expect(copy).toBeVisible();
+  await user.click(copy);
+  expect(api.copyRunScreenshot).toHaveBeenCalledWith(screenshotRun.id);
+  expect(await screen.findByText("Screenshot copied — ready to paste.")).toBeVisible();
+  expect(api.saveSettings).not.toHaveBeenCalled();
+  expect(api.exportRun).not.toHaveBeenCalled();
+});
+
 function services(
   overrides: Partial<PopupServices> = {},
 ): PopupServices {
@@ -78,9 +163,13 @@ function services(
     load: vi.fn().mockResolvedValue(data),
     startQuickCapture: vi.fn(),
     takeScreenshot: vi.fn().mockResolvedValue(undefined),
+    prepareFullPageAccess: vi.fn().mockResolvedValue(undefined),
+    requestFullPageAccess: vi.fn().mockResolvedValue(true),
     inspectVideos: vi.fn().mockResolvedValue({ pageUrl: "https://example.test", videos: [], notes: [] }),
     downloadVideo: vi.fn().mockResolvedValue(undefined),
     exportVideoDetails: vi.fn().mockResolvedValue(undefined),
+    exportVideoText: vi.fn().mockResolvedValue(undefined),
+    copyVideoTranscript: vi.fn().mockResolvedValue(undefined),
     startRecipeCapture: vi.fn(),
     resumePicker: vi.fn(),
     scrapeSharePoint: vi.fn().mockResolvedValue({
@@ -95,12 +184,15 @@ function services(
     deleteRecipe: vi.fn(),
     saveProject: vi.fn(),
     exportRun: vi.fn(),
+    copyRunScreenshot: vi.fn().mockResolvedValue(undefined),
     deleteRun: vi.fn(),
     clearInbox: vi.fn(),
     loadRunScreenshot: vi
       .fn()
       .mockResolvedValue("data:image/png;base64,c2NyZWVuc2hvdA=="),
-    openPreview: vi.fn().mockResolvedValue(undefined),
+    loadPreview: vi.fn().mockImplementation(async (runId: string) => ({
+      run: { ...data.runs[0]!, id: runId }, title: 'Selected capture', theme: 'dark',
+    })),
     pinRun: vi.fn(),
     requestOriginAccess: vi.fn().mockResolvedValue(true),
     revokeOriginAccess: vi.fn(),
@@ -112,6 +204,83 @@ function services(
 }
 
 describe("PopupApp", () => {
+  it("keeps session borrowing, screenshot clipboard, inline preview and pop-out preview available together", async () => {
+    const user = userEvent.setup();
+    const run = { ...data.runs[0]!, id: "combined", screenshot: {
+      kind: "visible" as const, title: "Example page", filename: "example.png", sourceUrl: "https://example.test/",
+    } };
+    const api = services({
+      openBorrowSession: vi.fn().mockResolvedValue(undefined),
+      openPreviewWindow: vi.fn().mockResolvedValue(undefined),
+      load: vi.fn().mockResolvedValue({ ...data, runs: [run] }),
+    });
+    render(<PopupApp services={api} />);
+    await user.click(await screen.findByRole("button", { name: "Borrow session" }));
+    expect(api.openBorrowSession).toHaveBeenCalledOnce();
+    expect(screen.getByRole("button", { name: "Scan videos" })).toBeVisible();
+    await user.selectOptions(screen.getByRole("combobox", { name: "Save screenshots to" }), "clipboard");
+    expect(api.saveSettings).toHaveBeenCalledWith({ ...data.settings, screenshotDestination: "clipboard" });
+    await user.click(screen.getByRole("tab", { name: "Inbox" }));
+    await user.click(screen.getByRole("button", { name: "Pop out ↗" }));
+    expect(api.openPreviewWindow).toHaveBeenCalledWith("combined", "screenshot");
+    await user.click(screen.getByRole("button", { name: "Expand preview" }));
+    expect(await screen.findByRole("region", { name: "Expanded capture preview" })).toBeVisible();
+    await user.keyboard("{Escape}");
+    await user.click(screen.getByRole("button", { name: "Copy image" }));
+    expect(api.copyRunScreenshot).toHaveBeenCalledWith("combined");
+  });
+
+  it("uses two fresh Allow clicks and calls the permission API inside each click before capturing", async () => {
+    const user = userEvent.setup();
+    const discovery: EmbeddedViewerPermission = { kind: "discovery", tabId: 7 };
+    const origin: EmbeddedViewerPermission = { kind: "origin", tabId: 7, origin: "https://word-view.officeapps.live.com" };
+    let gesture = false;
+    const request = vi.fn(() => {
+      if (!gesture) throw new Error("permissions.request may only be called from a user input handler");
+      return Promise.resolve(true);
+    });
+    const api = services({
+      prepareFullPageAccess: vi.fn().mockResolvedValueOnce(discovery).mockResolvedValueOnce(origin).mockResolvedValue(undefined),
+      requestFullPageAccess: permission => requestEmbeddedViewerPermission(permission, { request } as unknown as EmbeddedFrameApi),
+    });
+    render(<PopupApp services={api} />);
+    await screen.findByText("Current site");
+    await user.click(screen.getByRole("button", { name: "Full page" }));
+    const allowDiscovery = await screen.findByRole("button", { name: "Allow viewer discovery" });
+    expect(request).not.toHaveBeenCalled();
+    expect(api.takeScreenshot).not.toHaveBeenCalled();
+    gesture = true;
+    fireEvent.click(allowDiscovery);
+    gesture = false;
+    const allowOrigin = await screen.findByRole("button", { name: "Allow document access" });
+    expect(screen.getByText(/Allow access to https:\/\/word-view.officeapps.live.com/)).toBeVisible();
+    expect(request).toHaveBeenCalledOnce();
+    expect(api.takeScreenshot).not.toHaveBeenCalled();
+    gesture = true;
+    fireEvent.click(allowOrigin);
+    gesture = false;
+    await waitFor(() => expect(api.takeScreenshot).toHaveBeenCalledWith("full-page", 7));
+    expect(request.mock.calls).toEqual([[{ permissions: ["webNavigation"] }], [{ origins: ["https://word-view.officeapps.live.com/*"] }]]);
+    expect(screen.queryByRole("button", { name: "Allow document access" })).not.toBeInTheDocument();
+  });
+
+  it("keeps the Allow button available after a denied permission without taking a partial screenshot", async () => {
+    const user = userEvent.setup();
+    const permission: EmbeddedViewerPermission = { kind: "origin", tabId: 7, origin: "https://viewer.test" };
+    const api = services({
+      prepareFullPageAccess: vi.fn().mockResolvedValueOnce(permission).mockResolvedValue(undefined),
+      requestFullPageAccess: vi.fn().mockResolvedValueOnce(false).mockResolvedValueOnce(true),
+    });
+    render(<PopupApp services={api} />);
+    await screen.findByText("Current site");
+    await user.click(screen.getByRole("button", { name: "Full page" }));
+    await user.click(await screen.findByRole("button", { name: "Allow document access" }));
+    expect(await screen.findByText(/Permission was not granted/)).toBeVisible();
+    expect(api.takeScreenshot).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("button", { name: "Allow document access" }));
+    await waitFor(() => expect(api.takeScreenshot).toHaveBeenCalledWith("full-page", 7));
+    expect(api.requestFullPageAccess).toHaveBeenCalledTimes(2);
+  });
   it("persists screenshot destinations separately and previews an inbox PNG without recipe retry", async () => {
     const user = userEvent.setup();
     const run = { ...data.runs[0]!, id: "png", recordCount: 0, records: [], screenshot: {
@@ -124,11 +293,15 @@ describe("PopupApp", () => {
     expect(api.saveSettings).toHaveBeenCalledWith({ ...data.settings, screenshotDestination: "inbox" });
     await user.click(screen.getByRole("tab", { name: "Inbox" }));
     expect(await screen.findByAltText("Captured screenshot")).toBeVisible();
-    await user.click(screen.getByRole("button", { name: "Pop out preview" }));
-    expect(api.openPreview).toHaveBeenCalledWith("png", "screenshot");
+    await user.click(screen.getByRole("button", { name: "Expand preview" }));
+    expect(await screen.findByRole('region', { name: 'Expanded capture preview' })).toBeVisible();
+    expect(api.loadPreview).toHaveBeenCalledWith("png");
+    await user.click(screen.getByRole('button', { name: '← Back to Inbox' }));
     await user.click(screen.getByRole("button", { name: /^Text$/ }));
-    await user.click(screen.getByRole("button", { name: "Pop out preview" }));
-    expect(api.openPreview).toHaveBeenLastCalledWith("png", "text");
+    await user.click(screen.getByRole("button", { name: "Expand preview" }));
+    expect(await screen.findByText('title: Alpha')).toBeVisible();
+    await user.keyboard('{Escape}');
+    expect(screen.queryByRole('region', { name: 'Expanded capture preview' })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Save screenshot PNG" }));
     expect(api.exportRun).toHaveBeenCalledWith("png");

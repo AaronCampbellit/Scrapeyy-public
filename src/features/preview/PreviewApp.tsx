@@ -1,9 +1,10 @@
 import { useEffect, useState } from "react";
 
 import type { CaptureRun } from "../../contracts/models";
-import type { PreviewType } from "../../platform/preview-window";
+import type { PreviewType } from "../../platform/preview-layout";
 import type { AppTheme } from "../../storage/app-settings";
 import { captureText } from "./capture-text";
+import { COPIED_NOTICE } from "../../platform/image-clipboard";
 import "../shared/theme.css";
 import "./preview.css";
 
@@ -17,16 +18,21 @@ export interface PreviewCapture {
 export interface PreviewServices {
   load(runId: string): Promise<PreviewCapture | undefined>;
   exportRun(runId: string): Promise<void>;
+  copyScreenshot(image: Blob): Promise<void>;
 }
 
 export function PreviewApp({
   runId,
   initialView,
   services,
+  onClose,
+  onLayoutChange,
 }: {
   runId: string | null;
   initialView: PreviewType;
   services: PreviewServices;
+  onClose?: () => void;
+  onLayoutChange?: (view: PreviewType, dimensions?: { width: number; height: number }) => void;
 }) {
   const [capture, setCapture] = useState<PreviewCapture>();
   const [loading, setLoading] = useState(true);
@@ -40,7 +46,23 @@ export function PreviewApp({
   }>();
   const [zoom, setZoom] = useState<number | "fit">("fit");
   const [exporting, setExporting] = useState(false);
+  const [copying, setCopying] = useState(false);
   const [notice, setNotice] = useState<string>();
+  const embedded = !!onClose;
+  const Shell = embedded ? "section" : "main";
+
+  useEffect(() => {
+    onLayoutChange?.(view, dimensions);
+  }, [view, dimensions, onLayoutChange]);
+
+  useEffect(() => {
+    if (!onClose) return;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") { event.preventDefault(); onClose(); }
+    };
+    document.addEventListener("keydown", closeOnEscape);
+    return () => document.removeEventListener("keydown", closeOnEscape);
+  }, [onClose]);
 
   useEffect(() => {
     let active = true;
@@ -91,10 +113,11 @@ export function PreviewApp({
   }, [capture?.screenshot]);
 
   useEffect(() => {
+    if (embedded) return;
     document.title = capture
       ? `${capture.title} · Scrapeyy preview`
       : "Scrapeyy preview";
-  }, [capture?.title]);
+  }, [capture?.title, embedded]);
 
   const exportCapture = async () => {
     if (!capture) return;
@@ -121,9 +144,24 @@ export function PreviewApp({
   const readableText =
     capture && view === "text" ? captureText(capture.run) : "";
 
+  const copyImage = async () => {
+    if (!capture?.screenshot || copying) return;
+    setCopying(true);
+    setNotice(undefined);
+    try {
+      await services.copyScreenshot(capture.screenshot);
+      setNotice(COPIED_NOTICE);
+    } catch (cause) {
+      setNotice(cause instanceof Error ? cause.message : "Could not copy the screenshot.");
+    } finally {
+      setCopying(false);
+    }
+  };
+
   return (
-    <main
-      className="preview-shell"
+    <Shell
+      className={`preview-shell${embedded ? " preview-embedded" : ""}`}
+      aria-label="Expanded capture preview"
       data-theme={capture?.theme ?? "dark"}
       aria-busy={loading}
     >
@@ -144,6 +182,11 @@ export function PreviewApp({
             </p>
           ) : null}
         </div>
+        {capture?.screenshot ? (
+          <button type="button" disabled={copying} onClick={() => void copyImage()}>
+            {copying ? "Copying…" : "Copy image"}
+          </button>
+        ) : null}
         {capture ? (
           <button
             className="preview-save"
@@ -158,8 +201,8 @@ export function PreviewApp({
                 : "Export"}
           </button>
         ) : null}
-        <button type="button" onClick={() => window.close()}>
-          Close
+        <button className="preview-back" type="button" autoFocus={embedded} onClick={onClose ?? (() => window.close())}>
+          {embedded ? "← Back to Inbox" : "Close"}
         </button>
       </header>
       {capture ? (
@@ -307,6 +350,6 @@ export function PreviewApp({
         ) : null}
         {notice ? <span role="status">{notice}</span> : null}
       </footer>
-    </main>
+    </Shell>
   );
 }

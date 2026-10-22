@@ -28,12 +28,20 @@ keeps long captures readable after the toolbar popup closes.
 - **Extract useful structure:** native and ARIA tables, repeated cards/lists,
   dashboard metrics, visible text, links, images, and media details.
 - **Keep results locally:** Inbox previews, pinning, retention, retryable runs,
-  and a resizable text/screenshot preview window.
+  expansion inside the popup, and a separate text/screenshot preview window.
 - **Automate repeat work:** reusable recipes, bounded pagination/infinite scroll,
   and browser schedules with optional access to specific origins.
 - **Export references:** JSON and CSV plus sanitized HTML, computed CSS, image
   assets, and a screenshot when browser capture is available. Standalone tools
   also capture visible, scrolling full-page, or selected-region PNGs.
+- **Copy screenshots directly:** choose Clipboard or use **Copy image** in the
+  Inbox and expanded preview. Embedded document viewers and reversed chat panes
+  retain the later full-page capture fixes.
+- **Export Wistia media and text:** discover MP4 quality choices, copy transcripts,
+  and download TXT, VTT, and SRT when the provider supplies them.
+
+The complete [capture and media reference](docs/CAPTURE_REFERENCE.md) preserves
+the existing settings, screenshot destinations, permission workflow, and exports.
 
 ## Try it in five minutes
 
@@ -112,9 +120,16 @@ Installed Firefox/Zen verification for the current build is still pending.
 The [acceptance checklist](docs/ACCEPTANCE.md) records earlier release evidence
 and distinguishes simulated browser APIs from installed-browser checks.
 
+The combined **0.1.18** release was validated on **2026-10-22**: strict TypeScript,
+39 test files / 235 tests, Chrome MV3 and Firefox MV2 builds, ten scrolling-page
+fixtures, inline preview, and real PNG clipboard writes passed. The dedicated
+Chromium session-export smoke test could not launch on this Windows device
+(`spawn EPERM`, four attempts). Native permission dialogs, the existing installed
+browser copies, and authenticated cross-device sessions remain manual checks.
+
 ## Scope and limitations
 
-This is a development extension, currently **0.1.7**. Captures and configuration
+This is a development extension, currently **0.1.18**. Captures and configuration
 are stored in the browser; explicit exports and configured automatic downloads
 write files to the device. Asset and SharePoint requests can use your existing
 website session. Captured text and images may contain sensitive information, so

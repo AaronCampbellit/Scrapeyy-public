@@ -1,19 +1,20 @@
 // Real Chromium extension APIs against synthetic local data only.
 // Set SCRAPEYY_PLAYWRIGHT_MODULE to an installed Playwright index.mjs if needed.
-import { mkdtemp, cp, readFile, writeFile, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { mkdtemp, mkdir, cp, readFile, writeFile, rm } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { createServer } from 'node:http';
 import assert from 'node:assert/strict';
 import { decryptSession } from '../../scripts/decrypt-session.mjs';
 const { chromium } = await import(process.env.SCRAPEYY_PLAYWRIGHT_MODULE || 'playwright');
-const temporary = await mkdtemp(join(tmpdir(),'scrapeyy-smoke-'));
+const scratch = resolve('work/session-smoke');
+await mkdir(scratch,{recursive:true});
+const temporary = await mkdtemp(join(scratch,'run-'));
 const server = createServer((_request,response)=>{response.setHeader('Content-Type','text/html');response.end('<!doctype html><title>Synthetic session fixture</title><h1>Synthetic session fixture</h1>');});
 await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
 const origin=`http://127.0.0.1:${server.address().port}`;
 let context;
 try {
- const extension=join(temporary,'extension'); await cp(resolve('.output/chrome-mv3'),extension,{recursive:true});
+ const extension=join(temporary,'extension'); await cp(resolve(process.argv[2] || '.output/chrome-mv3'),extension,{recursive:true});
  const path=join(extension,'manifest.json'),manifest=JSON.parse(await readFile(path,'utf8'));
  // ONLY the temporary copy pregrants permissions; production manifest stays optional.
  manifest.permissions.push('cookies'); manifest.host_permissions=['http://127.0.0.1/*'];

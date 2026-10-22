@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 
 import type { CaptureRun, Recipe } from "../../contracts/models";
 import { captureText } from "../preview/capture-text";
-import type { PreviewType } from "../../platform/preview-window";
+import type { PreviewType } from "../../platform/preview-layout";
 
 interface InboxViewProps {
   runs: CaptureRun[];
@@ -11,8 +11,10 @@ interface InboxViewProps {
   onClear(): void | Promise<void>;
   onDelete(runId: string): void | Promise<void>;
   onExport(runId: string): void | Promise<void>;
+  onCopyScreenshot(runId: string): void | Promise<void>;
   onLoadScreenshot(runId: string): Promise<string | undefined>;
   onOpenPreview(runId: string, preview: PreviewType): void | Promise<void>;
+  onPopOutPreview?: ((runId: string, preview: PreviewType) => void | Promise<void>) | undefined;
   onPin(runId: string, pinned: boolean): void | Promise<void>;
   onRetry(recipeId: string): void | Promise<void>;
 }
@@ -24,8 +26,10 @@ export function InboxView({
   onClear,
   onDelete,
   onExport,
+  onCopyScreenshot,
   onLoadScreenshot,
   onOpenPreview,
+  onPopOutPreview,
   onPin,
   onRetry,
 }: InboxViewProps) {
@@ -162,11 +166,15 @@ export function InboxView({
                 </div>
               ) : null}
               <div className="preview-heading">
-                <h3>Preview</h3>
-                <button className="small-button preview-popout" type="button"
-                  aria-label="Pop out preview" disabled={disabled}
-                  onClick={() => void onOpenPreview(selected.id, preview)}>
+                {onPopOutPreview ? <button className="small-button" type="button"
+                  disabled={disabled} onClick={() => void onPopOutPreview(selected.id, preview)}>
                   Pop out ↗
+                </button> : null}
+                <h3>Preview</h3>
+                <button className="small-button preview-expand" type="button"
+                  aria-label="Expand preview" disabled={disabled}
+                  onClick={() => void onOpenPreview(selected.id, preview)}>
+                  Expand ⤢
                 </button>
                 <div className="preview-tabs" role="group" aria-label="Preview type">
                   <button
@@ -203,6 +211,7 @@ export function InboxView({
                 <div className="preview-empty">No screenshot was captured for this run.</div>
               )}
               <div className="detail-actions">
+                {selected.screenshot || screenshotUrl ? <button disabled={disabled} onClick={() => void onCopyScreenshot(selected.id)} type="button">Copy image</button> : null}
                 <button aria-label={selected.screenshot ? "Save screenshot PNG" : "Export run"} disabled={disabled} onClick={() => void onExport(selected.id)} type="button">{selected.screenshot ? "Save PNG…" : "Export"}</button>
                 {!selected.screenshot ? <button disabled={disabled} onClick={() => void onRetry(selected.recipeId)} type="button">Retry</button> : null}
                 <button disabled={disabled} onClick={() => void onPin(selected.id, !selected.pinned)} type="button">{selected.pinned ? "Unpin" : "Pin"}</button>

@@ -12,8 +12,10 @@ import {
   type PopupSite,
 } from "../../src/features/popup/PopupApp";
 import { extensionBrowser } from "../../src/platform/browser-api";
+import { copyScreenshotToClipboard } from "../../src/platform/image-clipboard";
 import { openCapturePreview } from "../../src/platform/preview-window";
 import { ensureContentScript } from "../../src/platform/content-injection";
+import { prepareEmbeddedViewerAccess, requestEmbeddedViewerPermission } from "../../src/platform/embedded-frame-capture";
 import { assertSelectionReady, screenshotSaved } from "../../src/platform/screenshot-messages";
 import {
   isSharePointMetadata,
@@ -114,15 +116,26 @@ async function pendingRecipeStatus(tabId?: number): Promise<boolean> {
 }
 
 const services: PopupServices = {
+  openPreviewWindow: openCapturePreview,
   async openBorrowSession() {
     const tab = await activeTab();
     const origin = httpOrigin(tab?.url);
     if (tab?.id === undefined || !origin) throw new Error("Open a website first.");
-    await extensionBrowser.tabs.create({url: extensionBrowser.runtime.getURL("/borrow-session.html") + "?" + new URLSearchParams({tabId:String(tab.id),origin})});
+    await extensionBrowser.tabs.create({
+      url: extensionBrowser.runtime.getURL("/borrow-session.html") + "?" + new URLSearchParams({tabId:String(tab.id),origin}),
+    });
   },
-  async takeScreenshot(kind) {
+  async prepareFullPageAccess(expectedTabId) {
     const tab = await activeTab();
     if (tab?.id === undefined || !httpOrigin(tab.url)) throw new Error("Open a website first.");
+    if (expectedTabId !== undefined && tab.id !== expectedTabId) throw new Error("The selected tab changed. Click Full page again on the document.");
+    return prepareEmbeddedViewerAccess(tab.id);
+  },
+  requestFullPageAccess: requestEmbeddedViewerPermission,
+  async takeScreenshot(kind, expectedTabId) {
+    const tab = await activeTab();
+    if (tab?.id === undefined || !httpOrigin(tab.url)) throw new Error("Open a website first.");
+    if (expectedTabId !== undefined && tab.id !== expectedTabId) throw new Error("The selected tab changed. Click Full page again on the document.");
     const response = await extensionBrowser.runtime.sendMessage({
       type: kind === "selection" ? "SCRAPEYY_START_SCREENSHOT_SELECTION" : "SCRAPEYY_SCREENSHOT",
       tabId: tab.id, kind,
@@ -138,7 +151,7 @@ const services: PopupServices = {
     const tab = await activeTab();
     if (tab?.id === undefined || !httpOrigin(tab.url)) throw new Error("Open a website first.");
     await ensureContentScript(tab.id);
-    return extensionBrowser.tabs.sendMessage(tab.id, { type: "SCRAPEYY_INSPECT_VIDEOS" });
+    return extensionBrowser.runtime.sendMessage({ type: "SCRAPEYY_INSPECT_VIDEOS", tabId: tab.id });
   },
   async downloadVideo(url) {
     const tab = await activeTab();
@@ -149,6 +162,18 @@ const services: PopupServices = {
     const tab = await activeTab();
     if (tab?.id === undefined) throw new Error("Open a website first.");
     await extensionBrowser.runtime.sendMessage({ type: "SCRAPEYY_EXPORT_VIDEO_DETAILS", tabId: tab.id });
+  },
+  async exportVideoText(request) {
+    const tab = await activeTab();
+    if (tab?.id === undefined || !httpOrigin(tab.url)) throw new Error("Open a website first.");
+    await extensionBrowser.runtime.sendMessage({ type: "SCRAPEYY_EXPORT_VIDEO_TEXT", tabId: tab.id, ...request });
+  },
+  async copyVideoTranscript(request) {
+    const tab = await activeTab();
+    if (tab?.id === undefined || !httpOrigin(tab.url)) throw new Error("Open a website first.");
+    const text: unknown = await extensionBrowser.runtime.sendMessage({ type: "SCRAPEYY_READ_VIDEO_TEXT", tabId: tab.id, ...request, format: "txt" });
+    if (typeof text !== "string" || !text.trim()) throw new Error("Reload Scrapeyy, then scan videos again to copy the transcript.");
+    await navigator.clipboard.writeText(text);
   },
   async load() {
     const tab = await activeTab();
@@ -275,12 +300,25 @@ const services: PopupServices = {
     });
   },
   deleteRun: (runId) => captures.deleteRun(runId),
+  async copyRunScreenshot(runId) {
+    const artifact = await captures.getArtifact(`${runId}:screenshot`);
+    if (!artifact) throw new Error("No screenshot is available to copy for this capture.");
+    await copyScreenshotToClipboard(artifact.blob);
+  },
   clearInbox: () => captures.clearUnpinnedRuns().then(() => undefined),
   async loadRunScreenshot(runId) {
     const artifact = await captures.getArtifact(`${runId}:screenshot`);
     return artifact ? URL.createObjectURL(artifact.blob) : undefined;
   },
-  openPreview: openCapturePreview,
+  async loadPreview(runId) {
+    const run = await captures.getRun(runId);
+    if (!run) return undefined;
+    const [artifact, recipe, settings] = await Promise.all([
+      captures.getArtifact(`${runId}:screenshot`), recipes.get(run.recipeId), appSettings.get(),
+    ]);
+    return { run, title: run.screenshot ? `Screenshot · ${run.screenshot.title}` : recipe?.name ?? "Quick capture",
+      theme: settings.theme, ...(artifact ? { screenshot: artifact.blob } : {}) };
+  },
   async pinRun(runId, pinned) {
     const run = await captures.getRun(runId);
     if (run) await captures.putRun({ ...run, pinned });

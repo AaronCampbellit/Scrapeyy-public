@@ -1,5 +1,43 @@
 # Scrapeyy V1 Acceptance
 
+## Version 0.1.12 inline screenshot copy
+
+- **Copy image** sits immediately before **Save PNG…** in the Inbox as well as
+  the pop-out preview. It remains available for captures containing a screenshot
+  regardless of the screenshot destination or selected text/screenshot view.
+- Copying reads the original saved PNG and reports success only after the
+  clipboard write finishes. It does not change settings, save a file, or export
+  the capture.
+- Strict TypeScript, 33 Vitest files / 185 tests, and Chrome MV3 plus Firefox MV2
+  production builds passed. Both compiled Inbox/preview checks verified the
+  inline button order and a real 1600 by 4200 PNG clipboard write.
+- Both existing local build folders were refreshed to 0.1.12 and all 38 files
+  were SHA-256 verified against the production build. Browser reload and native
+  Firefox/Zen acceptance are left to Aaron for testing at his request.
+
+## Version 0.1.11 screenshot clipboard
+
+- **Clipboard** is available in the Capture and Settings screenshot destination
+  menus. Visible page, Full page, and Draw selection use the selected destination.
+  Clipboard capture creates no download or Inbox item.
+- **Copy image** in the Inbox pop-out preview copies the original saved PNG,
+  regardless of zoom or the selected preview view. Progress, successful copy,
+  denied clipboard access, and retry are covered.
+- Firefox/Zen use the native image clipboard API. Chrome background captures
+  use a focused copy window, which shows confirmation and closes automatically.
+  Chrome preview copies run directly in the focused preview. Only clipboard-write
+  permission is requested; the extension never reads the clipboard.
+- Strict TypeScript, 33 Vitest files / 184 tests, both production builds, and
+  compiled browser checks passed. The Chrome copy page wrote a real 80 by 40 PNG
+  with verified green pixels and reported a denied write without success.
+  Both compiled preview builds copied a real 1600 by 4200 PNG.
+  Screenshot regressions covered all three modes, nested panels, sticky content,
+  overlap, lazy growth, and restoration.
+- Browser fixtures bridge extension runtime/window APIs. The extension-capable
+  Chromium executable failed to launch after three retries on this Windows host.
+  Reloading the user's installed browser and native Firefox/Zen clipboard acceptance
+  remain unverified.
+
 ## Version 0.1.7 Inbox preview window
 
 - Select a capture in Inbox and click **Pop out ↗**. A separate 1100×800 browser
@@ -207,3 +245,143 @@ For a Both-mode run, inspect the downloaded ZIP and confirm:
 - Browser download policies may show a save prompt. A failed download remains
   recoverable from the Capture Inbox.
 - Site terms and content rights remain the user's responsibility.
+## Version 0.1.8 embedded document screenshot repair
+
+- Full-page screenshot recognizes a dominant embedded document viewer on a
+  viewport-sized page, including IT Glue's Office iframe without a `src`.
+- It discovers frames through optional `webNavigation` access and requests only
+  the uniquely identified viewer origin. Version 0.1.9 uses dedicated Allow
+  buttons for each missing permission, as described below.
+  Ambiguous or inaccessible viewers stop with a clear message, not a partial PNG.
+- The frame is matched to its actual parent iframe using a per-capture token and
+  `postMessage` source identity. Captures scroll the document panel and crop out
+  the viewer toolbar/footer before stitching. Original scroll and styles are
+  restored on success and failure, and high-DPI/last-tile overlap is covered.
+- Scope: the viewer must be fully visible and unscaled. A normal long outer page
+  continues using the existing page capture path. Nested inaccessible viewers
+  require separately granted origin access; their content is not silently skipped.
+- Regression checks cover the live IT Glue dimensions (1244px outer viewport,
+  1131px panel, 2855px document), explicit missing permission errors, origin
+  selection, failed-capture cleanup, and 2x pixel stitching.
+- Codex in-app browser fixture validation captured a real cross-origin,
+  three-page/2850px viewer with no iframe `src`, including END OF DOCUMENT, and
+  restored the panel to its starting scroll position of 137px. Fixture transport
+  simulates the WebExtension APIs; installed add-on testing on IT Glue is a
+  separate check after the browser reloads the updated local extension.
+- Live IT Glue validation: after reloading the local 0.1.8 extension and running
+  Full page on `/5667882/docs/21231734`, Aaron confirmed **All three pages
+  captured** on 2026-10-05. This is user-confirmed installed-extension evidence.
+
+## Version 0.1.9 permission gesture repair
+
+- Real-browser feedback exposed a 0.1.8 failure: awaited frame discovery caused
+  `permissions.request may only be called from a user input handler`, before a
+  permission dialog could appear.
+- Full page now discovers the next missing permission without requesting it.
+  The popup shows **Allow viewer discovery**, then **Allow document access**
+  with the exact viewer origin. Each click invokes `permissions.request`
+  synchronously before awaiting any browser API. Already granted permissions
+  are skipped; capture continues after the final grant.
+- Denial leaves the Allow button available to retry and prevents partial capture.
+  The selected tab is checked again before resuming a pending screenshot.
+- Regression tests enforce the original click stack for both permission stages,
+  exact-origin scope, asynchronous discovery without permission requests, and
+  denial/retry behavior. TypeScript, 32 test files/171 tests, and Chrome MV3 plus
+  Firefox MV2 production builds passed on 2026-10-05.
+- Codex browser testing rendered the actual popup with simulated WebExtension
+  permission APIs. Native click-dispatch checks passed for discovery and exact
+  viewer-origin access, including a denied request and successful retry. Capture
+  resumed after the final grant. Aaron confirmed the native permission flow
+  worked in a real browser on 2026-10-05, then requested a higher prompt position.
+
+## Version 0.1.10 permission prompt visibility
+
+- The document access prompt sits directly below the popup's tabs, outside the
+  scrolling content area. Its Allow button stays visible when the capture tools
+  are scrolled and when a denied request displays a notice.
+- The popup uses a fixed-height flex column so optional notices and permission
+  prompts take their own space while the tools continue scrolling below them.
+- Browser fixture validation at 600px and 500px popup heights kept the Allow
+  button at 180px below the popup top while the content scrolled (182px/282px).
+  The denied-request notice also left the button visible at the compact height.
+  Both permission clicks still ran during native click dispatch and capture
+  resumed. TypeScript and the 20 popup/capture integration tests passed.
+
+## Version 0.1.13 Wistia video discovery and MP4 downloads
+
+- Video tools recognize Wistia iframe, legacy async/class, script and Aurora
+  embeds, combining duplicate references before resolving public player metadata.
+  Scanning does not start playback or transfer the video itself.
+- Public MP4 playback assets appear in descending quality with resolution and
+  file size. Downloads retain the actual exposed asset URL and save with a
+  readable `.mp4` filename even when the CDN URL ends in `.bin`.
+- Downloads re-scan the selected page and re-resolve the provider's current
+  assets before accepting a URL. Unsupported/protected metadata, unrelated
+  delivery hosts, originals, audio-only assets, images and streaming playlists
+  do not become provider download candidates. Failures keep the embed visible.
+- Metadata requests omit credentials and referrers, reject redirects, and bound
+  response size, time and per-page work. Public metadata uses CORS; no new host
+  permission or Wistia API token was added.
+- Exact live source: [IT Glue Q3 2026 innovation webinar recap](https://community.kaseya.com/quarterly-innovation-webinars-157/it-glue-q3-2026-innovation-webinar-recap-31893),
+  Wistia media `i0vm82gvvs`, checked on 2026-10-09. Public metadata exposed five
+  MP4 assets: 1080p, 720p, 540p, 360p and 224p. Each returned HTTP 206 for a
+  32-byte range, the MP4 `ftyp` signature, `video/mp4` content type and a total
+  size matching its metadata. This checks real file availability without
+  transferring the full 59-minute webinar.
+- The actual popup components and shipping resolver were tested in the Codex
+  browser using a fixture containing the live page's exact iframe. The resolver
+  fetched real Wistia metadata across origins, displayed one webinar with five
+  downloads, and selecting 1080p produced the expected asset request. The fixture
+  records download requests; it does not simulate a completed native download.
+- TypeScript, all 35 test files / 204 tests, and Chrome MV3 / Firefox MV2
+  production builds passed. Regression coverage includes discovery, deduplication,
+  quality ordering, filename safety, metadata failures, protection handling,
+  invalid delivery hosts, stale/arbitrary download rejection and popup actions.
+- Local evidence is in `work/wistia-video`: `live-verification.json`,
+  `wistia-video-validation.jpg`, staged builds, release ZIPs and hash receipts.
+  Both durable `.output` folders are refreshed by the validated release workflow.
+- After updating/reloading Chrome 0.1.13, Aaron confirmed on 2026-10-09 that the
+  installed Codex browser extension shows the webinar and all five download
+  choices. This is user-confirmed installed discovery evidence. A completed
+  native transfer of the full webinar and installed Firefox acceptance were
+  not reported; file availability was checked using the real MP4 byte ranges.
+
+## Version 0.1.14 independent captions and transcript exports
+
+- Video tools now expose text actions above MP4 downloads, grouped by language:
+  Copy transcript, Download transcript (TXT), Captions (VTT), and Captions (SRT).
+  The metadata-only action is labeled Export video metadata (JSON).
+- Public Wistia metadata supplies complete transcript text plus canonical caption
+  endpoints. TXT/copy uses this text without transferring subtitle or video bytes.
+  Other exposed VTT/SRT tracks can be read on demand; currently loaded browser
+  cues remain a clearly labeled partial fallback when no track URL exists.
+  Transcript-only tracks never receive fabricated subtitle timings.
+- Exports re-scan the current page and validate the selected video/track identity
+  before reading its URL. Caption requests omit credentials/referrers, reject
+  redirects, and enforce a 10-second timeout and 2 MB response limit. No new host
+  permissions, API tokens, microphone access, or transcription service was added.
+  If the player exposes no text, the UI reports that limitation; audio speech-to-
+  text generation is outside this feature.
+- Exact live webinar `i0vm82gvvs`, checked 2026-10-09: one English track, 51,737
+  characters in the titled/source-attributed TXT export; VTT and SRT each contain
+  1,132 cues ending at 3580.055 seconds of the 3582.73-second webinar. Both subtitle
+  exports round-trip to the same cue text/times. No video bytes were downloaded.
+- The shipping popup/resolver/exporter were exercised in the Codex browser using
+  live CORS-enabled metadata/caption responses in a labeled validation fixture.
+  All three formats produced the expected content/counts; the text controls fit
+  the popup without overflow. The fixture clipboard write resolved and displayed
+  success, but the browser tool's separate clipboard read returned empty. The
+  fixture's success notice alone was not treated as proof of native clipboard
+  or Save As behavior; installed acceptance was subsequently confirmed by Aaron.
+- TypeScript, all 36 Vitest files / 222 tests, and Chrome MV3 / Firefox MV2 builds
+  passed. Coverage includes parsing/conversion, language selection, full versus
+  partial text, absent timings, size limits, stale/forged selection rejection,
+  background routing, clipboard text retrieval, and independent popup actions.
+- Both durable `.output` folders and all ZIP entries match staged builds by
+  SHA-256 (21 Chrome files, 17 Firefox files). Evidence, sample TXT/VTT/SRT exports,
+  ZIPs, source/build verification and prior-build backups are in `work/video-text`.
+  Browser policy prevents the agent from operating the extension manager.
+- After the manual Chrome update/reload and webinar refresh, Aaron confirmed on
+  2026-10-09: "Yes, copy and downloads work." This confirms the installed English
+  controls, Copy transcript/paste, and TXT/VTT/SRT downloads requested in the
+  acceptance question. Installed Firefox/Zen acceptance remains pending.

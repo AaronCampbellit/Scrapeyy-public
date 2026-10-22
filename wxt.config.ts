@@ -5,7 +5,7 @@ import { resolve } from "node:path";
 export default defineConfig({
   modules: ["@wxt-dev/module-react"],
   zip: {
-    excludeSources: ["node_modules/**", ".output/**", ".wxt/**", ".git/**", ".codex/**", ".playwright*/**", "work/**", "coverage/**", "dist/**", "**/.env", "**/.env.*", "**/*.pem", "**/*.key", "**/*.local"],
+    excludeSources: ["node_modules/**", ".output/**", ".wxt/**", ".git/**", ".codex/**", ".playwright*/**", "work/**", "coverage/**", "dist/**", "docs/design/**", "**/.env", "**/.env.*", "**/*.pem", "**/*.key", "**/*.local"],
   },
   hooks: {
     "build:done": async (wxt) => {
@@ -33,7 +33,7 @@ export default defineConfig({
       ...(manifestVersion === 2
         ? { browser_action: { default_icon: icons } }
         : { action: { default_icon: icons } }),
-      permissions: ["activeTab", "scripting", "storage", "downloads", "alarms"],
+      permissions: ["activeTab", "scripting", "storage", "downloads", "alarms", "clipboardWrite"],
       // On-demand content scripts have no manifest matches for WXT to inherit.
       // Their shadow-root UI still fetches this packaged stylesheet.
       web_accessible_resources: [
@@ -46,11 +46,11 @@ export default defineConfig({
       ...(manifestVersion === 2
         ? {
             optional_permissions:
-              ["cookies", ...optionalOrigins] as unknown as NonNullable<
+              ["cookies", "webNavigation", ...optionalOrigins] as unknown as NonNullable<
                 UserManifest["optional_permissions"]
               >,
           }
-        : { optional_permissions: ["cookies"], optional_host_permissions: optionalOrigins }),
+        : { optional_permissions: ["cookies", "webNavigation"], optional_host_permissions: optionalOrigins }),
       browser_specific_settings: {
         gecko: {
           id: "scrapeyy@local",

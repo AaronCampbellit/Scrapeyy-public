@@ -7,6 +7,8 @@ import type {
 import type { DesignSnapshot } from "../src/design/snapshot";
 import type { AssetReference } from "../src/design/assets";
 import { videoMetadataForExport, type VideoInventory } from "../src/media/videos";
+import { resolveWistiaVideos } from "../src/media/wistia";
+import { createVideoTextExport, type VideoTextRequest } from "../src/media/video-text";
 import { safePathSegment } from "../src/export/filename";
 import {
   buildRunBundle,
@@ -20,8 +22,9 @@ import { extensionBrowser } from "../src/platform/browser-api";
 import { ensureContentScript } from "../src/platform/content-injection";
 import { downloadBundle } from "../src/platform/downloads";
 import { downloadScreenshot } from "../src/platform/screenshot-download";
+import { copyScreenshotToClipboard } from "../src/platform/image-clipboard";
 import { saveScreenshotToInbox } from "../src/storage/screenshot-inbox";
-import { assertSelectionReady } from "../src/platform/screenshot-messages";
+import { assertSelectionReady, CAPTURE_VERSION } from "../src/platform/screenshot-messages";
 import { hasOriginAccess } from "../src/platform/permissions";
 import { downloadReferencedAssetsFromPage } from "../src/platform/page-asset-download";
 import {
@@ -31,6 +34,7 @@ import {
   type ElementBounds,
 } from "../src/platform/screenshots";
 import { createTabFullPageCaptureController } from "../src/platform/tab-full-page-controller";
+import { createEmbeddedFrameCaptureController } from "../src/platform/embedded-frame-capture";
 import { advanceAcrossNavigation } from "../src/platform/tab-navigation";
 import {
   acquireRecipeTab,
@@ -601,11 +605,7 @@ export default defineBackground(() => {
         request.scope === "full-page"
           ? await captureFullPageScreenshot(
               tabId,
-              createTabFullPageCaptureController(
-                tabId,
-                (targetTabId, message) =>
-                  extensionBrowser.tabs.sendMessage(targetTabId, message),
-              ),
+              await fullPageController(tabId),
             )
           : execution.designBounds
             ? await captureElementScreenshot(
@@ -664,6 +664,22 @@ export default defineBackground(() => {
     void ensureDefaultProject().then(syncSchedules);
   });
   const screenshotTabs = new Set<number>();
+  const fullPageController = async (tabId: number) => {
+    const embedded = await createEmbeddedFrameCaptureController(tabId);
+    if (!embedded) return createTabFullPageCaptureController(tabId, (id, message) => extensionBrowser.tabs.sendMessage(id, message));
+    return {
+      async prepare() {
+        await extensionBrowser.tabs.sendMessage(tabId, { type: "SCRAPEYY_SET_CAPTURE_UI_HIDDEN", hidden: true });
+        return embedded.prepare();
+      },
+      measure: () => embedded.measure!(),
+      scrollTo: embedded.scrollTo,
+      async restore() {
+        try { await embedded.restore(); }
+        finally { await extensionBrowser.tabs.sendMessage(tabId, { type: "SCRAPEYY_SET_CAPTURE_UI_HIDDEN", hidden: false }); }
+      },
+    };
+  };
   const saveScreenshot = async (tabId: number, kind: "visible" | "full-page" | "selection", bounds?: ElementBounds) => {
     if (screenshotTabs.has(tabId)) throw new Error("A screenshot is already in progress.");
     screenshotTabs.add(tabId);
@@ -676,8 +692,7 @@ export default defineBackground(() => {
         show: () => extensionBrowser.tabs.sendMessage(tabId, { type: "SCRAPEYY_SET_CAPTURE_UI_HIDDEN", hidden: false }).then(() => undefined),
       };
       const image = kind === "full-page"
-        ? await captureFullPageScreenshot(tabId, createTabFullPageCaptureController(
-            tabId, (id, message) => extensionBrowser.tabs.sendMessage(id, message)))
+        ? await captureFullPageScreenshot(tabId, await fullPageController(tabId))
         : kind === "selection" && bounds
           ? await captureElementScreenshot(tabId, bounds)
           : await captureVisibleScreenshot(tabId, visibility);
@@ -685,6 +700,10 @@ export default defineBackground(() => {
       const settings = await appSettings.get();
       const filename = safePathSegment(new URL(tab.url).hostname) + "-" + kind + "-" +
         new Date().toISOString().replace(/[:.]/g, "-") + ".png";
+      if (settings.screenshotDestination === "clipboard") {
+        await copyScreenshotToClipboard(image);
+        return { status: "copied" as const, destination: "clipboard" as const, version: CAPTURE_VERSION, filename };
+      }
       if (settings.screenshotDestination === "inbox") {
         return await saveScreenshotToInbox(image, {
           kind, filename, sourceUrl: tab.url, title: tab.title || new URL(tab.url).hostname,
@@ -727,26 +746,50 @@ export default defineBackground(() => {
       if (value.type === "SCRAPEYY_SAVE_SCREENSHOT_SELECTION" && sender.tab?.id !== undefined && value.bounds) {
         return saveScreenshot(sender.tab.id, "selection", value.bounds as ElementBounds);
       }
+      if (value.type === "SCRAPEYY_INSPECT_VIDEOS" && typeof value.tabId === "number") {
+        const tabId = value.tabId;
+        return (async () => {
+          await ensureContentScript(tabId);
+          const inventory = await extensionBrowser.tabs.sendMessage(tabId, { type: "SCRAPEYY_INSPECT_VIDEOS" }) as VideoInventory;
+          return resolveWistiaVideos(inventory);
+        })();
+      }
       if (value.type === "SCRAPEYY_DOWNLOAD_VIDEO" && typeof value.tabId === "number" && typeof value.url === "string") {
         const tabId = value.tabId;
         const url = value.url;
         return (async () => {
           await ensureContentScript(tabId);
-          const inventory = await extensionBrowser.tabs.sendMessage(tabId, { type: "SCRAPEYY_INSPECT_VIDEOS" }) as VideoInventory;
-          if (!inventory.videos.some((video) => video.sources.some((source) => source.kind === "file" && source.url === url))) {
+          const inventory = await resolveWistiaVideos(await extensionBrowser.tabs.sendMessage(tabId, { type: "SCRAPEYY_INSPECT_VIDEOS" }) as VideoInventory);
+          const source = inventory.videos.flatMap((video) => video.sources).find((source) => source.kind === "file" && source.url === url);
+          if (!source) {
             throw new Error("That direct video file is no longer on the page. Scan again.");
           }
           const settings = await appSettings.get();
-          const name = safePathSegment(decodeURIComponent(new URL(url).pathname.split("/").pop() || "video"));
+          const name = safePathSegment(source.filename || decodeURIComponent(new URL(url).pathname.split("/").pop() || "video"));
           return extensionBrowser.downloads.download({ url, filename: settings.downloadSubfolder + "/Videos/" + name,
             saveAs: settings.downloadBehavior === "ask", conflictAction: "uniquify" });
+        })();
+      }
+      if ((value.type === "SCRAPEYY_EXPORT_VIDEO_TEXT" || value.type === "SCRAPEYY_READ_VIDEO_TEXT") && typeof value.tabId === "number" &&
+          typeof value.videoKey === "string" && typeof value.captionKey === "string" &&
+          ["txt", "vtt", "srt"].includes(String(value.format))) {
+        const tabId = value.tabId;
+        const readText = value.type === "SCRAPEYY_READ_VIDEO_TEXT";
+        const request: VideoTextRequest = { videoKey: value.videoKey, captionKey: value.captionKey, format: readText ? "txt" : value.format as VideoTextRequest["format"] };
+        return (async () => {
+          await ensureContentScript(tabId);
+          const inventory = await resolveWistiaVideos(await extensionBrowser.tabs.sendMessage(tabId, { type: "SCRAPEYY_INSPECT_VIDEOS" }) as VideoInventory);
+          const exported = await createVideoTextExport(inventory, request);
+          if (readText) return exported.blob.text();
+          const settings = await appSettings.get();
+          return downloadBundle(exported.blob, settings.downloadSubfolder + "/Transcripts/" + exported.filename, settings.downloadBehavior === "ask");
         })();
       }
       if (value.type === "SCRAPEYY_EXPORT_VIDEO_DETAILS" && typeof value.tabId === "number") {
         const tabId = value.tabId;
         return (async () => {
           await ensureContentScript(tabId);
-          const inventory = await extensionBrowser.tabs.sendMessage(tabId, { type: "SCRAPEYY_INSPECT_VIDEOS" }) as VideoInventory;
+          const inventory = await resolveWistiaVideos(await extensionBrowser.tabs.sendMessage(tabId, { type: "SCRAPEYY_INSPECT_VIDEOS" }) as VideoInventory);
           const settings = await appSettings.get();
           return downloadBundle(new Blob([JSON.stringify(videoMetadataForExport(inventory), null, 2)], { type: "application/json" }),
             settings.downloadSubfolder + "/Videos/media.json", settings.downloadBehavior === "ask");

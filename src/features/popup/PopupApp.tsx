@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import type {
   CaptureRun,
@@ -13,14 +13,18 @@ import {
 import "../shared/theme.css";
 import "./popup.css";
 import { CaptureView } from "./CaptureView";
+import { COPIED_NOTICE } from "../../platform/image-clipboard";
 import { InboxView } from "./InboxView";
 import { RecipesView } from "./RecipesView";
 import { SettingsView } from "./SettingsView";
 import { SharePointView } from "./SharePointView";
 import type { SharePointMetadata } from "../../sharepoint/scrape";
 import type { VideoInventory } from "../../media/videos";
+import type { VideoTextRequest } from "../../media/video-text";
 import { CAPTURE_VERSION, type ScreenshotResult } from "../../platform/screenshot-messages";
-import type { PreviewType } from "../../platform/preview-window";
+import { previewPaneWidth, type PreviewType } from "../../platform/preview-layout";
+import { PreviewApp, type PreviewCapture } from "../preview/PreviewApp";
+import type { EmbeddedViewerPermission } from "../../platform/embedded-frame-capture";
 
 export interface PopupSite {
   origin: string;
@@ -44,12 +48,17 @@ export interface PopupWorkspaceData {
 
 export interface PopupServices {
   openBorrowSession?(): Promise<void>;
+  openPreviewWindow?(runId: string, preview: PreviewType): Promise<void>;
   load(): Promise<PopupWorkspaceData>;
   startQuickCapture(): Promise<void>;
-  takeScreenshot(kind: "visible" | "full-page" | "selection"): Promise<ScreenshotResult | void>;
+  takeScreenshot(kind: "visible" | "full-page" | "selection", expectedTabId?: number): Promise<ScreenshotResult | void>;
+  prepareFullPageAccess(expectedTabId?: number): Promise<EmbeddedViewerPermission | undefined>;
+  requestFullPageAccess(permission: EmbeddedViewerPermission): Promise<boolean>;
   inspectVideos(): Promise<VideoInventory>;
   downloadVideo(url: string): Promise<void>;
   exportVideoDetails(): Promise<void>;
+  exportVideoText(request: VideoTextRequest): Promise<void>;
+  copyVideoTranscript(request: VideoTextRequest): Promise<void>;
   startRecipeCapture(recipeId?: string): Promise<void>;
   resumePicker(): Promise<void>;
   scrapeSharePoint(): Promise<SharePointMetadata>;
@@ -57,10 +66,11 @@ export interface PopupServices {
   deleteRecipe(recipeId: string): Promise<void>;
   saveProject(project: Project): Promise<void>;
   exportRun(runId: string): Promise<void>;
+  copyRunScreenshot(runId: string): Promise<void>;
   deleteRun(runId: string): Promise<void>;
   clearInbox(): Promise<void>;
   loadRunScreenshot(runId: string): Promise<string | undefined>;
-  openPreview(runId: string, preview: PreviewType): Promise<void>;
+  loadPreview(runId: string): Promise<PreviewCapture | undefined>;
   pinRun(runId: string, pinned: boolean): Promise<void>;
   requestOriginAccess(origin: string): Promise<boolean>;
   revokeOriginAccess(origin: string): Promise<boolean>;
@@ -95,9 +105,36 @@ export function PopupApp({ services }: { services: PopupServices }) {
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<string>();
   const [videos, setVideos] = useState<VideoInventory>();
+  const [fullPagePermission, setFullPagePermission] = useState<EmbeddedViewerPermission>();
   const [sharePointMetadata, setSharePointMetadata] =
     useState<SharePointMetadata>();
   const resumeAttempted = useRef(false);
+  const [expandedPreview, setExpandedPreview] = useState<{ runId: string; view: PreviewType }>();
+  const [previewWidth, setPreviewWidth] = useState(previewPaneWidth());
+  const previewTrigger = useRef<HTMLElement | null>(null);
+  const expandedServices = useMemo(() => ({
+    load: services.loadPreview,
+    exportRun: services.exportRun,
+    copyScreenshot: async () => { if (expandedPreview) await services.copyRunScreenshot(expandedPreview.runId); },
+  }), [services, expandedPreview?.runId]);
+
+  // Firefox sizes toolbar popups from body, rather than the root element.
+  useLayoutEffect(() => {
+    const oldWidth = document.body.style.width;
+    document.body.classList.add("scrapeyy-popup");
+    return () => { document.body.classList.remove("scrapeyy-popup"); document.body.style.width = oldWidth; };
+  }, []);
+  useLayoutEffect(() => {
+    document.body.style.width = `${expandedPreview ? previewWidth : 420}px`;
+  }, [!!expandedPreview, previewWidth]);
+
+  const closePreview = useCallback(() => {
+    setExpandedPreview(undefined);
+    requestAnimationFrame(() => { if (previewTrigger.current?.isConnected) previewTrigger.current.focus({ preventScroll: true }); });
+  }, []);
+  const updatePreviewLayout = useCallback((preview: PreviewType, dimensions?: { width: number; height: number }) => {
+    setPreviewWidth(previewPaneWidth(preview === "screenshot" ? dimensions?.width : undefined, screen.availWidth || 800));
+  }, []);
 
   const refresh = async () => {
     const loaded = await services.load();
@@ -169,9 +206,28 @@ export function PopupApp({ services }: { services: PopupServices }) {
     }
   };
 
+  const saveScreenshot = async (kind: "visible" | "full-page" | "selection", expectedTabId?: number) => {
+    setNotice(kind === "selection" ? "Opening selection tool…" : "Saving screenshot…");
+    const result = expectedTabId === undefined
+      ? await services.takeScreenshot(kind)
+      : await services.takeScreenshot(kind, expectedTabId);
+    if (result && "destination" in result && result.destination === "clipboard") {
+      setNotice(COPIED_NOTICE);
+    } else if (result && "destination" in result && result.destination === "inbox") {
+      await refresh();
+      setNotice("Screenshot saved to Inbox.");
+    } else setNotice(result ? `Screenshot saved: ${result.filename}` : undefined);
+  };
+
+  const continueFullPage = async (expectedTabId?: number) => {
+    const permission = await services.prepareFullPageAccess(expectedTabId);
+    setFullPagePermission(permission);
+    if (!permission) await saveScreenshot("full-page", expectedTabId);
+  };
+
   return (
     <main
-      className="popup-shell"
+      className={`popup-shell${expandedPreview ? " popup-shell-expanded" : ""}`}
       aria-busy={loading}
       data-theme={data.settings.theme}
     >
@@ -183,10 +239,13 @@ export function PopupApp({ services }: { services: PopupServices }) {
           <h1>Scrapeyy</h1>
           <p>Local capture studio · {CAPTURE_VERSION}</p>
         </div>
-        <span className="local-badge">Local-only</span>
+        <div className="popup-header-actions">
+          <span className="local-badge">Local-only</span>
+          {services.openBorrowSession ? <button className="small-button" type="button"
+            disabled={loading || busy || data.site?.access === "unavailable"}
+            onClick={() => void perform(services.openBorrowSession!)}>Borrow session</button> : null}
+        </div>
       </header>
-
-      {services.openBorrowSession ? <button type="button" disabled={loading || data.site?.access === "unavailable"} onClick={() => void perform(services.openBorrowSession!)}>Borrow session</button> : null}
 
       <nav className="popup-tabs" role="tablist" aria-label="Scrapeyy sections">
         {popupTabs.map(({ id, label }) => (
@@ -194,7 +253,7 @@ export function PopupApp({ services }: { services: PopupServices }) {
             aria-label={label}
             aria-selected={view === id}
             key={id}
-            onClick={() => setView(id)}
+            onClick={() => { setExpandedPreview(undefined); setView(id); }}
             role="tab"
             type="button"
           >
@@ -208,7 +267,26 @@ export function PopupApp({ services }: { services: PopupServices }) {
 
       {notice ? <div className="popup-notice" role="status">{notice}</div> : null}
 
-      <div className="popup-content">
+      {view === "capture" && fullPagePermission ? <section className="screenshot-permission" aria-label="Document access">
+        <strong>Capture every document page</strong>
+        <small>{fullPagePermission.kind === "discovery"
+          ? "Allow Scrapeyy to identify the embedded document viewer. Your browser will ask you to approve access."
+          : `Allow access to ${fullPagePermission.origin} so Scrapeyy can scroll and capture the whole document.`}</small>
+        <button type="button" disabled={busy} onClick={() => void perform(async () => {
+          // Invoke directly in the click handler, before any asynchronous work.
+          const granted = await services.requestFullPageAccess(fullPagePermission);
+          if (!granted) throw new Error("Permission was not granted. Click Allow again to retry, or use Visible page.");
+          await continueFullPage(fullPagePermission.tabId);
+        })}>
+          {fullPagePermission.kind === "discovery" ? "Allow viewer discovery" : "Allow document access"}
+        </button>
+      </section> : null}
+
+      {expandedPreview ? <div className="popup-expanded-preview">
+        <PreviewApp runId={expandedPreview.runId} initialView={expandedPreview.view} services={expandedServices}
+          onClose={closePreview} onLayoutChange={updatePreviewLayout} />
+      </div> : null}
+      <div className="popup-content" hidden={!!expandedPreview}>
         {view === "capture" ? (
           <CaptureView
             settings={data.settings}
@@ -217,16 +295,15 @@ export function PopupApp({ services }: { services: PopupServices }) {
             site={data.site}
             onQuickCapture={() => perform(services.startQuickCapture)}
             onScreenshot={(kind) => perform(async () => {
-              setNotice(kind === "selection" ? "Opening selection tool…" : "Saving screenshot…");
-              const result = await services.takeScreenshot(kind);
-              if (result && "destination" in result && result.destination === "inbox") {
-                await refresh();
-                setNotice("Screenshot saved to Inbox.");
-              } else setNotice(result ? `Screenshot saved: ${result.filename}` : undefined);
+              setFullPagePermission(undefined);
+              if (kind === "full-page") await continueFullPage();
+              else await saveScreenshot(kind);
             })}
             onInspectVideos={() => perform(async () => { setVideos(await services.inspectVideos()); })}
             onDownloadVideo={(url) => perform(() => services.downloadVideo(url), "Video download requested.")}
             onExportVideoDetails={() => perform(services.exportVideoDetails, "Video details exported.")}
+            onExportVideoText={(request) => perform(() => services.exportVideoText(request), request.format === "txt" ? "Transcript download requested." : "Caption download requested.")}
+            onCopyVideoTranscript={(request) => perform(() => services.copyVideoTranscript(request), "Transcript copied — ready to paste.")}
             videos={videos}
             onCreateRecipe={() =>
               perform(async () => {
@@ -309,8 +386,16 @@ export function PopupApp({ services }: { services: PopupServices }) {
             }
             onExport={(runId) => perform(() => services.exportRun(runId),
               data.runs.find((run) => run.id === runId)?.screenshot ? "Screenshot saved to device." : "Export started.")}
+            onCopyScreenshot={(runId) => perform(() => services.copyRunScreenshot(runId), COPIED_NOTICE)}
             onLoadScreenshot={services.loadRunScreenshot}
-            onOpenPreview={(runId, preview) => perform(() => services.openPreview(runId, preview))}
+            onPopOutPreview={services.openPreviewWindow ? (runId, preview) =>
+              perform(() => services.openPreviewWindow!(runId, preview)) : undefined}
+            onOpenPreview={(runId, preview) => {
+              previewTrigger.current = document.activeElement as HTMLElement;
+              setNotice(undefined);
+              setPreviewWidth(previewPaneWidth());
+              setExpandedPreview({ runId, view: preview });
+            }}
             onPin={(runId, pinned) =>
               performAndRefresh(() => services.pinRun(runId, pinned))
             }
